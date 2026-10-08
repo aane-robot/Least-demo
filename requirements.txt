@@ -1,0 +1,7 @@
+numpy>=1.24
+scipy>=1.10
+flask>=3.0
+
+# 可选：仅用于运行原作者的 TensorFlow / igraph 实现，本 Demo 不需要
+# tensorflow>=2.10
+# igraph>=0.10
