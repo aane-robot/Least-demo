@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LEAST · 贝叶斯网络结构学习交互式系统</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='20261002') }}">
+</head>
+<body>
+
+<header class="hdr">
+  <div class="hdr-main">
+    <h1>LEAST <span class="sub">· Interactive Bayesian Network Structure Learning</span></h1>
+    <p>基于谱半径上界的连续无环约束 ·  支持上传自有数据集</p>
+  </div>
+  <div class="hdr-actions">
+    <button class="btn ghost" onclick="openBench()">复现论文 V-A 基准</button>
+    <button class="btn ghost" onclick="toggleHelp()">算法说明</button>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- ================= 左侧参数面板 ================= -->
+  <aside class="side">
+
+    <section class="card">
+      <h2>数据来源</h2>
+      <div class="tabs">
+        <div class="tab active" data-tab="syn" onclick="switchSrc('syn')">合成数据</div>
+        <div class="tab" data-tab="bi" onclick="switchSrc('bi')">内置示例</div>
+        <div class="tab" data-tab="up" onclick="switchSrc('up')">上传 CSV</div>
+      </div>
+
+      <div class="pane active" id="pane-syn">
+        <div class="row">
+          <label>节点数 d<input type="number" id="p_d" value="20" min="2" max="400"><span class="hint">论文只测到 d=100；d≤100 时 F1≈0.9，d=400 约 0.69</span></label>
+          <label>样本数 n<input type="number" id="p_n" value="0" min="0"><span class="hint">0 → 10d</span></label>
+        </div>
+        <div class="row">
+          <label>图模型
+            <select id="p_graph">
+              <option value="ER" selected>ER（随机图）</option>
+              <option value="SF">SF（无标度）</option>
+            </select>
+          </label>
+          <label>平均度<input type="number" id="p_degree" value="2" min="1" max="10" step="1"></label>
+        </div>
+        <div class="row">
+          <label>噪声类型
+            <select id="p_noise">
+              <option value="gaussian" selected>Gaussian</option>
+              <option value="exponential">Exponential</option>
+              <option value="gumbel">Gumbel</option>
+            </select>
+          </label>
+          <label>随机种子<input type="number" id="p_seed" value="42"></label>
+        </div>
+        <p class="hint block">与论文 §V-A 一致：ER 平均度 2 / SF 平均度 4，n = 10d，边权 ±[0.5, 2]，噪声 σ=1。有 ground truth，可算 F1。</p>
+      </div>
+
+      <div class="pane" id="pane-bi">
+        <label>示例数据集
+          <select id="p_dataset" onchange="onDatasetChange()">
+            <option value="flight" selected>机票预订全链路监控（根因分析）</option>
+            <option value="movie">电影评分（可解释推荐）</option>
+            <option value="sachs">Sachs 蛋白信号网络（真实数据 + 公认真值）</option>
+            <option value="chambers">Causal Chambers 光隧道（真实物理装置 + 真值由物理决定）</option>
+          </select>
+        </label>
+        <div class="row">
+          <label>样本数 n<input type="number" id="p_bi_n" value="2000" min="100"></label>
+          <label>种子<input type="number" id="p_bi_seed" value="7"></label>
+        </div>
+        <label class="chk"><input type="checkbox" id="p_anomaly"> 注入故障（航司 X 异常 → 观察传播链）</label>
+        <p class="hint block" id="bi_desc">论文 §VI-A 场景：14 个监控指标，人工构造的故障传播 DAG 作为 ground truth。</p>
+      </div>
+
+      <div class="pane" id="pane-up">
+        <div class="drop" id="drop" onclick="document.getElementById('file').click()">
+          <strong>点击选择文件</strong>
+          <span class="hint">CSV 数据表，或 BIF / DSC / NET 贝叶斯网络定义（bnlearn 标准格式）</span>
+          <span class="fname" id="fname">未选择文件</span>
+        </div>
+        <input type="file" id="file" accept=".csv,.txt,.bif,.dsc,.net" hidden>
+        <label class="chk"><input type="checkbox" id="p_header" checked> 首行为表头（仅 CSV）</label>
+        <label class="chk"><input type="checkbox" id="p_std" checked> 标准化各列（推荐用于真实数据）</label>
+        <div class="row">
+          <label>网络采样数 n<input type="number" id="p_net_n" value="2000" min="100" step="100"><span class="hint">仅 BIF/DSC/NET；建议 ≥ 10×节点数</span></label>
+          <label>出图阈值 τ<input type="number" id="p_tau_up" value="0.1" step="0.05" min="0"></label>
+        </div>
+        <p class="hint block" id="up_note">上传 CSV 无 ground truth，因此不计算 F1/P/R/SHD，只输出学到的因果图、收敛轨迹与根因路径。</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>算法参数</h2>
+
+      <div class="grp">无环性约束 δ(W)</div>
+      <div class="row">
+        <label>k 迭代步数<input type="number" id="p_k" value="5" min="1" max="30"><span class="hint">论文 5</span></label>
+        <label>α 平衡因子<input type="number" id="p_alpha" value="0.9" step="0.05" min="0" max="1"><span class="hint">论文 0.9</span></label>
+      </div>
+
+      <div class="grp">初始化 / 正则</div>
+      <div class="row">
+        <label>ζ 初始密度<input type="number" id="p_zeta" value="0.0001" step="0.0001"><span class="hint">论文 1e-4</span></label>
+        <label>λ L1 系数<input type="number" id="p_lam" value="0.5" step="0.1" min="0"><span class="hint">论文 0.5；真实/离散数据建议 0.1</span></label>
+      </div>
+      <div class="row">
+        <label>θ 剪枝阈值<input type="number" id="p_theta" value="0" step="0.001" min="0"><span class="hint">论文 V-A=0</span></label>
+      </div>
+
+      <div class="grp">增广拉格朗日（外层）</div>
+      <div class="row">
+        <label>ε 容差<input type="number" id="p_eps" value="0.001" step="0.01"><span class="hint">单值；勾网格时忽略</span></label>
+        <label>B ρ增长因子<input type="number" id="p_B" value="1.005" step="0.001" min="1"><span class="hint">论文 1.005</span></label>
+      </div>
+      <div class="row">
+        <label>T_o 外层上限<input type="number" id="p_To" value="300" min="1" max="2000"></label>
+        <label>T_i 内层 Adam<input type="number" id="p_Ti" value="200" min="1" max="2000"><span class="hint">论文 200</span></label>
+      </div>
+      <div class="row">
+        <label>学习率 lr<input type="number" id="p_lr" value="0.01" step="0.001"><span class="hint">论文 0.01</span></label>
+        <label>终止判据
+          <select id="p_term">
+            <option value="delta_or_h" selected>δ≤ε 或 h≤ε（V-A 修改版）</option>
+            <option value="h">仅 h≤ε（与 NOTEARS 同）</option>
+            <option value="delta_and_h">δ≤ε 且 h≤ε</option>
+            <option value="delta">仅 δ≤ε（Fig.3 原始）</option>
+          </select>
+        </label>
+      </div>
+      <label class="chk"><input type="checkbox" id="p_warm" checked> 热启动（ALM 标准；取消 = 论文伪代码冷启动）</label>
+      <label class="chk"><input type="checkbox" id="p_epsgrid" checked> ε 网格搜索 1e-1…1e-4（论文 V-A 协议，取最佳）</label>
+
+      <div class="grp">大规模引擎（least_sp，论文 O(ks) 稀疏实现）</div>
+      <div class="row">
+        <label>引擎
+          <select id="p_engine">
+            <option value="auto" selected>自动（d ≥ 400 用稀疏）</option>
+            <option value="dense">稠密 least_core（小数据）</option>
+            <option value="sparse">稀疏 least_sp（大数据）</option>
+          </select>
+        </label>
+        <label>稀疏 ζ<input type="number" id="p_zeta_sp" value="0.1" step="0.05" min="0"><span class="hint">初始密度</span></label>
+      </div>
+      <div class="row">
+        <label>稀疏 θ 剪枝<input type="number" id="p_theta_sp" value="0.001" step="0.001" min="0"><span class="hint">须 &lt;&lt; lr=0.01</span></label>
+        <label>稀疏切换阈值 d<input type="number" id="p_spthr" value="400" min="10"></label>
+      </div>
+
+      <div class="grp">评估 / 其它</div>
+      <div class="row">
+        <label>τ 阈值网格<input type="text" id="p_taus" value="0.02,0.05,0.1,0.2,0.3,0.4,0.5"></label>
+      </div>
+      <div class="row">
+        <label>最大秒数<input type="number" id="p_maxsec" value="90" min="5"></label>
+        <label>batch size<input type="number" id="p_batch" value="0" min="0"><span class="hint">0 = 全批量</span></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="p_nt"> 同时运行 NOTEARS 作对照（d ≤ 120）</label>
+    </section>
+
+    <button class="run" id="btnRun" onclick="runJob()">运行 LEAST</button>
+    <div class="progwrap"><div class="prog" id="prog"></div></div>
+    <div class="progtext" id="progtext">就绪</div>
+  </aside>
+
+  <!-- ================= 右侧结果区 ================= -->
+  <main class="main">
+
+    <div class="metrics" id="metrics"></div>
+
+    <div class="card">
+      <div class="tabs big">
+        <div class="tab active" data-vt="conv" onclick="switchView('conv')">收敛轨迹</div>
+        <div class="tab" data-vt="dag" onclick="switchView('dag')">因果图</div>
+        <div class="tab" data-vt="mat" onclick="switchView('mat')">权重矩阵</div>
+        <div class="tab" data-vt="edges" onclick="switchView('edges')">边表</div>
+        <div class="tab" data-vt="rca" onclick="switchView('rca')">根因分析</div>
+        <div class="tab" data-vt="log" onclick="switchView('log')">运行日志</div>
+      </div>
+
+      <div class="exportbar">
+        <button class="btn sm" id="btnExport" onclick="exportCsv()">导出邻接矩阵 CSV</button>
+        <span class="hint">导出 τ 阈值化后的 d×d 加权邻接矩阵（带行列名），可直接用于下游分析</span>
+      </div>
+
+      <div class="view active" id="view-conv">
+        <div class="chartrow">
+          <div class="chartbox"><h3>无环性度量 δ(W) 与 h(W)（对数轴）</h3><div id="ch1"></div></div>
+          <div class="chartbox"><h3>ALM 对偶变量 η 与惩罚系数 ρ</h3><div id="ch2"></div></div>
+        </div>
+        <p class="hint" id="conv_note"></p>
+      </div>
+
+      <div class="view" id="view-dag">
+        <div class="dagbar">
+          <span class="lg"><i style="background:#27ae60"></i>正确边 TP</span>
+          <span class="lg"><i style="background:#e74c3c"></i>假阳性 FP</span>
+          <span class="lg"><i style="background:#8e44ad"></i>反向边 REV</span>
+          <span class="lg"><i class="dashed"></i>漏检边 FN（仅预测图显示）</span>
+          <span class="sp"></span>
+          <button class="btn sm" onclick="relayout()">重新布局</button>
+          <label class="chk inline"><input type="checkbox" id="showFN" checked onchange="renderDag()">显示漏检边</label>
+        </div>
+        <div class="dags">
+          <div class="dagbox"><h3>Ground Truth</h3><div class="svgwrap" id="svg_true"></div></div>
+          <div class="dagbox"><h3>LEAST 学到的 DAG</h3><div class="svgwrap" id="svg_pred"></div></div>
+        </div>
+        <div id="nodeinfo" class="nodeinfo"></div>
+      </div>
+
+      <div class="view" id="view-mat">
+        <div class="chartbox"><h3>学到的权重矩阵 W（颜色=权重，红正/蓝负）</h3><div id="mat"></div></div>
+      </div>
+
+    <div class="view" id="view-edges">
+      <table class="tbl" id="edgetbl"></table>
+      <p class="hint" id="edgenote"></p>
+    </div>
+
+      <div class="view" id="view-rca">
+        <div class="rcabar">
+          <label>目标节点（"故障/兴趣"指标）
+            <select id="rca_target" onchange="loadPaths()"></select>
+          </label>
+          <label>最大路径长度<input type="number" id="rca_len" value="4" min="2" max="6" onchange="loadPaths()"></label>
+          <button class="btn sm" onclick="loadPaths()">分析</button>
+        </div>
+        <div id="rca_out" class="rcaout"></div>
+      </div>
+
+      <div class="view" id="view-log">
+        <pre class="logbox" id="logbox"></pre>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 帮助弹窗 -->
+<div class="modal" id="help" onclick="if(event.target===this)toggleHelp()">
+  <div class="modalbox">
+    <h2>LEAST 算法要点</h2>
+    <div class="mbody">
+      <p><b>1. 无环性约束（论文 §III）</b><br>
+      令 S = W∘W。迭代 <i>S<sup>(j+1)</sup> = (b<sup>(j)</sup>)<sup>-1</sup> ∘ S<sup>(j)</sup> ∘ (b<sup>(j)</sup>)<sup>T</sup></i>，
+      其中 <i>b<sup>(j)</sup> = (r(S<sup>(j)</sup>))<sup>α</sup> ∘ (c(S<sup>(j)</sup>))<sup>1-α</sup></i>。
+      上界 <i>δ<sup>(k)</sup>(W) = Σ b<sup>(k)</sup></i> ≥ 谱半径 ρ(S)，且 δ=0 ⟺ DAG。
+      计算仅需 O(ks)，近线性于节点数（NOTEARS 的 h(W)=Tr(e<sup>S</sup>)-d 需 O(d³)）。</p>
+      <p><b>2. 梯度（论文 Lemma 3–5, Fig.2）</b><br>
+      用 W 的支撑掩码 M 提前屏蔽，∇<sub>W</sub>δ = 2∇′<sub>S</sub>δ ∘ W，全程保持稀疏。</p>
+      <p><b>3. 优化（论文 §IV, Fig.3）</b><br>
+      增广拉格朗日 𝓁 = (1/n)‖X−XW‖² + λ‖W‖₁ + (ρ/2)δ² + ηδ，
+      内层 Adam，外层 η ← η+ρδ、ρ ← ρ·B。</p>
+      <p><b>4. 终止判据</b><br>
+      论文 Fig.3 用 δ ≤ ε；§V-A 为与 NOTEARS 公平对比，额外在外层末计算 h(W) 并在 h ≤ ε 时终止。
+      注意 δ 只是上界（k=5 时常比 h 松 2~3 个量级），若只要求 δ ≤ ε 会让 η 无界增长、过度压缩 W 而损害结构精度 —— 本系统默认使用 §V-A 的修改版判据。
+      想直接确认无环，看结果里的「谱半径 ρ(S)」卡片：它是阈值化后加权图的真实谱半径（特征值直算），≈0 即无环，比 δ 更可靠。</p>
+    </div>
+    <button class="btn" onclick="toggleHelp()">关闭</button>
+  </div>
+</div>
+
+<!-- 基准弹窗 -->
+<div class="modal" id="bench" onclick="if(event.target===this)closeBench()">
+  <div class="modalbox wide">
+    <h2>复现论文 §V-A 基准实验</h2>
+    <div class="rcabar">
+      <label>图模型<select id="b_graph"><option value="ER">ER-2</option><option value="SF">SF-4</option></select></label>
+      <label>噪声<select id="b_noise"><option value="gaussian">Gaussian</option><option value="exponential">Exponential</option><option value="gumbel">Gumbel</option></select></label>
+      <label>d<input type="text" id="b_d" value="10,20,50"></label>
+      <label>seeds<input type="text" id="b_seeds" value="42,43,44,45"></label>
+      <label class="chk inline"><input type="checkbox" id="b_nt" checked>含 NOTEARS 对照</label>
+      <button class="btn sm" onclick="startBench()">开始</button>
+    </div>
+    <div id="bench_out" class="benchout"></div>
+    <hr style="margin:16px 0;border:none;border-top:1px solid #e3e8ef">
+    <h2 style="font-size:17px">大规模可扩展性实测 <span style="font-size:12px;font-weight:normal;color:#7a8aa0">—— NOTEARS 在 d&gt;120 跑不动，LEAST 的大规模优势在这里现场验证</span></h2>
+    <div class="rcabar">
+      <label>算子 d 列表<input type="text" id="s_d" value="100,200,400,800,1600,3200"></label>
+      <label>端到端 d<input type="text" id="s_e2e" value="200,400"></label>
+      <label>NOTEARS 参考 d<input type="text" id="s_ntref" value="64" style="width:48px"></label>
+      <label class="chk inline"><input type="checkbox" id="s_nt" checked>NOTEARS 外推</label>
+      <label class="chk inline"><input type="checkbox" id="s_e2e_chk" checked>端到端实测</label>
+      <button class="btn sm" onclick="startScaling()">开始实测</button>
+    </div>
+    <div id="scal_out" class="benchout"></div>
+    <button class="btn" onclick="closeBench()">关闭</button>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js', v='20261007') }}"></script>
+</body>
+</html>
